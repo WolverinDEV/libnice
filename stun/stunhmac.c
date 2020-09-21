@@ -48,7 +48,10 @@
 #include <string.h>
 #include <assert.h>
 
-#ifdef HAVE_OPENSSL
+#ifdef _WIN32
+#include <winternl.h>
+#include <bcrypt.h>
+#elif defined(HAVE_OPENSSL)
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 #else
@@ -64,7 +67,84 @@ void stun_sha1 (const uint8_t *msg, size_t len, size_t msg_len, uint8_t *sha,
 
   assert (len >= 44u);
 
-#ifdef HAVE_OPENSSL
+#ifdef _WIN32
+{
+    NTSTATUS status;
+    BCRYPT_ALG_HANDLE alg_handle = NULL;
+    BCRYPT_HASH_HANDLE hash_handle = NULL;
+#ifndef NDEBUG
+    DWORD hash_length;
+    DWORD result_length;
+#endif
+
+#define TRY(x)                              \
+status = x;                                 \
+assert(NT_SUCCESS(status));                 \
+if(!NT_SUCCESS(status)) {                   \
+    goto cleanup;                           \
+}                                           \
+
+    TRY(BCryptOpenAlgorithmProvider(
+            &alg_handle,
+            BCRYPT_SHA1_ALGORITHM,
+            NULL,
+            BCRYPT_ALG_HANDLE_HMAC_FLAG)
+    );
+
+#ifndef NDEBUG
+    TRY(BCryptGetProperty(
+            alg_handle,
+            BCRYPT_HASH_LENGTH,
+            &hash_length,
+            sizeof(hash_length),
+            &result_length,
+            0)
+    );
+    assert(result_length == 4);
+    assert(hash_length == 20);
+#endif
+
+    TRY(BCryptCreateHash(
+                alg_handle,
+                &hash_handle,
+                NULL,
+                0,
+                (PBYTE) key,
+                sizeof(keylen),
+                0)
+    );
+
+    TRY (BCryptHashData (hash_handle, (PBYTE) msg, 2, 0));
+    TRY (BCryptHashData (hash_handle, (PBYTE) &fakelen, 2, 0));
+    TRY (BCryptHashData (hash_handle, (PBYTE) (msg + 4), len - 28, 0));
+
+    /* RFC 3489 specifies that the message's size should be 64 bytes,
+        and \x00 padding should be done */
+    if (padding && ((len - 24) % 64) > 0) {
+        uint16_t pad_size = 64 - ((len - 24) % 64);
+
+        TRY (BCryptHashData (hash_handle, (PBYTE) pad_char, pad_size, 0));
+    }
+
+    TRY(BCryptFinishHash(
+                hash_handle,
+                sha,
+                20,
+                0)
+    );
+
+cleanup:
+    if(hash_handle != NULL) {
+        BCryptDestroyHash(hash_handle);
+    }
+
+    if(alg_handle != NULL) {
+        BCryptCloseAlgorithmProvider(alg_handle, 0);
+    }
+
+#undef TRY
+}
+#elif defined(HAVE_OPENSSL)
 {
 #ifdef NDEBUG
 #define TRY(x) x;
@@ -171,7 +251,78 @@ void stun_hash_creds (const uint8_t *realm, size_t realm_len,
   const uint8_t *realm_trimmed = priv_trim_var (realm, &realm_len);
   const uint8_t *colon = (uint8_t *)":";
 
-#ifdef HAVE_OPENSSL
+#ifdef _WIN32
+    NTSTATUS status;
+    BCRYPT_ALG_HANDLE alg_handle = NULL;
+    BCRYPT_HASH_HANDLE hash_handle = NULL;
+#ifndef NDEBUG
+    BYTE hash_length;
+    DWORD result_length;
+#endif
+
+#define TRY(x)                              \
+status = x;                                 \
+assert(NT_SUCCESS(status));                 \
+if(!NT_SUCCESS(status)) {                   \
+    goto cleanup;                           \
+}                                           \
+
+    TRY(BCryptOpenAlgorithmProvider(
+            &alg_handle,
+            BCRYPT_MD5_ALGORITHM,
+            NULL,
+            0)
+    );
+
+#ifndef NDEBUG
+    TRY(BCryptGetProperty(
+            alg_handle,
+            BCRYPT_HASH_LENGTH,
+            &hash_length,
+            sizeof(hash_length),
+            &result_length,
+            0)
+    );
+    assert(result_length == 1);
+    assert(hash_length == 16);
+#endif
+
+    TRY(BCryptCreateHash(
+                alg_handle,
+                &hash_handle,
+                NULL,
+                0,
+                NULL,
+                0,
+                0)
+    );
+
+    TRY (BCryptHashData (hash_handle, (PBYTE) username_trimmed, username_len, 0));
+    TRY (BCryptHashData (hash_handle, (PBYTE) colon, 1, 0));
+
+    TRY (BCryptHashData (hash_handle, (PBYTE) realm_trimmed, realm_len, 0));
+    TRY (BCryptHashData (hash_handle, (PBYTE) colon, 1, 0));
+
+    TRY (BCryptHashData (hash_handle, (PBYTE) password_trimmed, password_len, 0));
+
+    TRY(BCryptFinishHash(
+                hash_handle,
+                md5,
+                16,
+                0)
+    );
+
+cleanup:
+    if(hash_handle != NULL) {
+        BCryptDestroyHash(hash_handle);
+    }
+
+    if(alg_handle != NULL) {
+        BCryptCloseAlgorithmProvider(alg_handle, 0);
+    }
+
+#undef TRY
+#elif defined(HAVE_OPENSSL)
   EVP_MD_CTX *ctx;
 
 #if (OPENSSL_VERSION_NUMBER < 0x10100000L) || \

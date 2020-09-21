@@ -32,14 +32,21 @@
  */
 
 
-
 #ifdef HAVE_CONFIG_H
 # include <config.h>
 #endif
 
 #include "rand.h"
 
-#if defined(HAVE_OPENSSL)
+#ifdef _WIN32
+#include <Windows.h>
+#include <bcrypt.h>
+void nice_RAND_nonce (uint8_t *dst, int len)
+{
+  BCryptGenRandom (NULL, dst, len, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+}
+
+#elif defined(HAVE_OPENSSL)
 
 #include <openssl/rand.h>
 
