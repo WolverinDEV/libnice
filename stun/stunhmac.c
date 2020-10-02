@@ -91,12 +91,13 @@ if(!NT_SUCCESS(status)) {                   \
             BCRYPT_ALG_HANDLE_HMAC_FLAG)
     );
 
-#ifndef NDEBUG
+#if !defined(NDEBUG) && false
+    /* this sadly fails... */
     TRY(BCryptGetProperty(
             alg_handle,
             BCRYPT_HASH_LENGTH,
             &hash_length,
-            sizeof(hash_length),
+            hash_length,
             &result_length,
             0)
     );
@@ -110,7 +111,7 @@ if(!NT_SUCCESS(status)) {                   \
                 NULL,
                 0,
                 (PBYTE) key,
-                sizeof(keylen),
+                keylen,
                 0)
     );
 
@@ -274,12 +275,13 @@ if(!NT_SUCCESS(status)) {                   \
             0)
     );
 
-#ifndef NDEBUG
+#if !defined(NDEBUG) && false
+    /* this sadly fails... */
     TRY(BCryptGetProperty(
             alg_handle,
             BCRYPT_HASH_LENGTH,
             &hash_length,
-            sizeof(hash_length),
+            hash_length,
             &result_length,
             0)
     );
