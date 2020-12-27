@@ -423,7 +423,26 @@ static gboolean priv_add_local_candidate_pruned (NiceAgent *agent, guint stream_
     if (nice_address_equal (&c->base_addr, &candidate->base_addr) &&
         nice_address_equal (&c->addr, &candidate->addr) &&
         c->transport == candidate->transport) {
-      nice_debug ("Candidate %p (component-id %u) redundant, ignoring.", candidate, component->id);
+      nice_debug ("Agent %p : s%d/c%d : cand %p redundant, ignoring.",
+          agent, stream_id, component->id, candidate);
+      return FALSE;
+    }
+
+    if (c->type == NICE_CANDIDATE_TYPE_RELAYED &&
+        candidate->type == NICE_CANDIDATE_TYPE_RELAYED &&
+        c->transport == candidate->transport &&
+        nice_address_equal_no_port (&c->addr, &candidate->addr)) {
+      nice_debug ("Agent %p : s%d/c%d : relay cand %p redundant, ignoring.",
+          agent, stream_id, component->id, candidate);
+      return FALSE;
+    }
+
+    if (c->type == NICE_CANDIDATE_TYPE_SERVER_REFLEXIVE &&
+        candidate->type == NICE_CANDIDATE_TYPE_SERVER_REFLEXIVE &&
+        c->transport == candidate->transport &&
+        nice_address_equal_no_port (&c->addr, &candidate->addr)) {
+      nice_debug ("Agent %p : s%d/c%d : srflx cand %p redundant, ignoring.",
+          agent, stream_id, component->id, candidate);
       return FALSE;
     }
   }
@@ -495,32 +514,51 @@ static void priv_assign_foundation (NiceAgent *agent, NiceCandidate *candidate)
       for (k = component->local_candidates; k; k = k->next) {
 	NiceCandidateImpl *n = k->data;
 
-        /* note: candidate must not on the local candidate list */
+        /* note: candidate must not be on the local candidate list */
 	g_assert (c != n);
 
-	if (candidate->type == n->c.type &&
-            candidate->transport == n->c.transport &&
-	    nice_address_equal_no_port (&candidate->base_addr, &n->c.base_addr) &&
-            (candidate->type != NICE_CANDIDATE_TYPE_RELAYED ||
-                priv_compare_turn_servers (c->turn, n->turn)) &&
-            !(agent->compatibility == NICE_COMPATIBILITY_GOOGLE &&
-                n->c.type == NICE_CANDIDATE_TYPE_RELAYED)) {
+	if (candidate->type != n->c.type)
+          continue;
+
+        if (candidate->transport != n->c.transport)
+          continue;
+
+        if (candidate->type == NICE_CANDIDATE_TYPE_RELAYED &&
+	    !nice_address_equal_no_port (&candidate->addr, &n->c.addr))
+          continue;
+
+        /* The base of a relayed candidate is that candidate itself, see
+         * sect 5.1.1.2. (Server Reflexive and Relayed Candidates) or
+         * ICE spec (RFC8445). It allows the relayed candidate from the
+         * same TURN server to share the same foundation.
+         */
+        if (candidate->type != NICE_CANDIDATE_TYPE_RELAYED &&
+            !nice_address_equal_no_port (&candidate->base_addr, &n->c.base_addr))
+          continue;
+
+        if (candidate->type == NICE_CANDIDATE_TYPE_RELAYED &&
+            !priv_compare_turn_servers (c->turn, n->turn))
+          continue;
+
+        if (candidate->type == NICE_CANDIDATE_TYPE_RELAYED &&
+            agent->compatibility == NICE_COMPATIBILITY_GOOGLE)
 	  /* note: currently only one STUN server per stream at a
 	   *       time is supported, so there is no need to check
 	   *       for candidates that would otherwise share the
 	   *       foundation, but have different STUN servers */
-	  g_strlcpy (candidate->foundation, n->c.foundation,
-              NICE_CANDIDATE_MAX_FOUNDATION);
-          if (n->c.username) {
-            g_free (candidate->username);
-            candidate->username = g_strdup (n->c.username);
-          }
-          if (n->c.password) {
-            g_free (candidate->password);
-            candidate->password = g_strdup (n->c.password);
-          }
-	  return;
-	}
+          continue;
+
+	g_strlcpy (candidate->foundation, n->c.foundation,
+            NICE_CANDIDATE_MAX_FOUNDATION);
+        if (n->c.username) {
+          g_free (candidate->username);
+          candidate->username = g_strdup (n->c.username);
+        }
+        if (n->c.password) {
+          g_free (candidate->password);
+          candidate->password = g_strdup (n->c.password);
+        }
+	return;
       }
     }
   }
@@ -646,12 +684,29 @@ priv_local_host_candidate_duplicate_port (NiceAgent *agent,
 
             nice_address_to_string (&candidate->addr, ip);
             nice_address_to_string (&c->addr, ip2);
-            nice_debug ("Agent %p: Local host %s candidate %s"
-                " for s%d:%d will use the same port %d as %s .", agent, ip,
+            nice_debug ("Agent %p: s%d/c%d: host candidate %s:[%s]:%u "
+                " will use the same port as %s:[%s]:%u", agent,
+                stream->id, component->id,
+                nice_candidate_transport_to_string (candidate->transport),
+                ip, nice_address_get_port (&candidate->addr),
                 nice_candidate_transport_to_string (c->transport),
-                stream->id, component->id, nice_address_get_port (&c->addr),
-                ip2);
+                ip2, nice_address_get_port (&c->addr));
             return FALSE;
+          }
+          {
+            gchar ip[NICE_ADDRESS_STRING_LEN];
+            gchar ip2[NICE_ADDRESS_STRING_LEN];
+
+            nice_address_to_string (&candidate->addr, ip);
+            nice_address_to_string (&c->addr, ip2);
+            nice_debug ("Agent %p: s%d/c%d: host candidate %s:[%s]:%u "
+                " has the same port as %s:[%s]:%u from s%d/c%d", agent,
+                candidate->stream_id, candidate->component_id,
+                nice_candidate_transport_to_string (candidate->transport),
+                ip, nice_address_get_port (&candidate->addr),
+                nice_candidate_transport_to_string (c->transport),
+                ip2, nice_address_get_port (&c->addr),
+                stream->id, component->id);
           }
 
           return TRUE;
@@ -714,7 +769,7 @@ HostCandidateResult discovery_add_local_host_candidate (
   /* note: candidate username and password are left NULL as stream
      level ufrag/password are used */
   if (transport == NICE_CANDIDATE_TRANSPORT_UDP) {
-    nicesock = nice_udp_bsd_socket_new (address);
+    nicesock = nice_udp_bsd_socket_new (address, &error);
   } else if (transport == NICE_CANDIDATE_TRANSPORT_TCP_ACTIVE) {
     nicesock = nice_tcp_active_socket_new (agent->main_context, address);
   } else if (transport == NICE_CANDIDATE_TRANSPORT_TCP_PASSIVE) {
@@ -885,7 +940,8 @@ discovery_add_relay_candidate (
   NiceAddress *address,
   NiceCandidateTransport transport,
   NiceSocket *base_socket,
-  TurnServer *turn)
+  TurnServer *turn,
+  uint32_t *lifetime)
 {
   NiceCandidate *candidate;
   NiceCandidateImpl *c;
@@ -938,8 +994,11 @@ discovery_add_relay_candidate (
 
   priv_assign_foundation (agent, candidate);
 
-  if (!priv_add_local_candidate_pruned (agent, stream_id, component, candidate))
-    goto errors;
+  if (!priv_add_local_candidate_pruned (agent, stream_id, component, candidate)) {
+    if (lifetime)
+      *lifetime = 0;
+    return c;
+  }
 
   nice_component_attach_socket (component, relay_socket);
   agent_signal_new_candidate (agent, candidate);
@@ -1192,16 +1251,6 @@ static gboolean priv_discovery_tick_unlocked (NiceAgent *agent)
       if (nice_address_is_valid (&cand->server) &&
           (cand->type == NICE_CANDIDATE_TYPE_SERVER_REFLEXIVE ||
               cand->type == NICE_CANDIDATE_TYPE_RELAYED)) {
-        NiceComponent *component;
-
-        if (agent_find_component (agent, cand->stream_id,
-                cand->component_id, NULL, &component) &&
-            (component->state == NICE_COMPONENT_STATE_DISCONNECTED ||
-                component->state == NICE_COMPONENT_STATE_FAILED))
-          agent_signal_component_state_change (agent,
-					       cand->stream_id,
-					       cand->component_id,
-					       NICE_COMPONENT_STATE_GATHERING);
 
         if (cand->type == NICE_CANDIDATE_TYPE_SERVER_REFLEXIVE) {
           buffer_len = stun_usage_bind_create (&cand->stun_agent,

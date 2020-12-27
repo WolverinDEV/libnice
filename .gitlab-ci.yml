@@ -25,9 +25,8 @@ build:
       - build/
 
 build msys2:
-  image: 'registry.freedesktop.org/gstreamer/gst-ci/amd64/windows:v10'
+  image: 'registry.freedesktop.org/gstreamer/gst-ci/amd64/windows:v13-master'
   stage: 'build'
-  allow_failure: true
   tags:
     - 'docker'
     - 'windows'
@@ -47,8 +46,19 @@ build msys2:
 
     # For some reason docker build hangs if this is included in the image, needs more troubleshooting
     - $env:PATH += ';C:\msys64\usr\bin;C:\msys64\mingw64\bin;C:\msys64\mingw32\bin'
+    # It seems that the gpg doesn't like the SSL secured version of the keyserver
     - C:\msys64\usr\bin\bash -c "pacman-key --init && pacman-key --populate msys2 && pacman-key --refresh-keys || true"
-    - C:\msys64\usr\bin\bash -c "pacman -Syuu --noconfirm"
+    - echo "Download newest msys2 keyring"
+    - C:\msys64\usr\bin\bash -c "curl -O http://repo.msys2.org/msys/x86_64/msys2-keyring-r21.b39fb11-1-any.pkg.tar.xz && pacman -U --noconfirm msys2-keyring-r21.b39fb11-1-any.pkg.tar.xz"
+    - C:\msys64\usr\bin\bash -c "pacman-key --init && pacman-key --populate msys2"
+    - C:\msys64\usr\bin\bash -c "pacman-key --refresh-keys || true"
+    - echo "Updating MSYS2"
+    - C:\msys64\usr\bin\bash -c "pacman -Syuu --noconfirm || echo Update failed, ignoring"
+    - echo "Killing all MSYS2 processes"
+    - taskkill /F /FI "MODULES eq msys-2.0.dll"
+    - echo "Completing MSYS2 update"
+    - C:\msys64\usr\bin\bash -c "pacman -Suu --noconfirm"
+    - echo "Installing needed MSYS2 packages"
     - C:\msys64\usr\bin\bash -c "pacman -Sy --noconfirm --needed mingw-w64-x86_64-toolchain ninja"
 
     # For some reason, options are separated by newline instead of space, so we
@@ -71,7 +81,7 @@ build msys2:
     # Gitlab Runner issue: https://gitlab.com/gitlab-org/gitlab-runner/issues/4291
     # Blocked upgrade issue: https://gitlab.freedesktop.org/gstreamer/gst-ci/issues/6#note_192780
     - C:\msys64\usr\bin\bash -c "meson build $env:MESON_ARGS &&
-        ninja -C build &&
+        ninja -j 1 -C build &&
         meson test -C build --print-errorlogs --suite libnice"
   artifacts:
     when: on_failure
@@ -81,7 +91,6 @@ build msys2:
 
 .build msvc:
   extends: build msys2
-  allow_failure: false
   variables:
     GLIB_VERSION: 2.64.2
   script:
@@ -193,8 +202,8 @@ pages:
     paths:
       - public
     expire_in: 1 year
-#  Needs gitlab 12.8, we're on 12.7 now
-#  trigger: libnice/libnice-
+  # For some reason, trigger gets rejected
+  # trigger: libnice/libnice-website
   script:
     - mkdir public/
     - mv build/docs/reference/libnice/html/ public/libnice/

@@ -185,11 +185,8 @@ nice_component_remove_socket (NiceAgent *agent, NiceComponent *cmp,
       continue;
     }
 
-    if (candidate == cmp->selected_pair.local) {
+    if (candidate == cmp->selected_pair.local)
       nice_component_clear_selected_pair (cmp);
-      agent_signal_component_state_change (agent, cmp->stream_id,
-          cmp->id, NICE_COMPONENT_STATE_FAILED);
-    }
 
     refresh_prune_candidate (agent, candidate);
     if (candidate->sockptr != nsocket && stream) {
@@ -197,8 +194,9 @@ nice_component_remove_socket (NiceAgent *agent, NiceComponent *cmp,
       conn_check_prune_socket (agent, stream, cmp, candidate->sockptr);
       nice_component_detach_socket (cmp, candidate->sockptr);
     }
-    agent_remove_local_candidate (agent, (NiceCandidate *) candidate);
-    nice_candidate_free ((NiceCandidate *) candidate);
+    if (stream)
+      agent_remove_local_candidate (agent, stream, (NiceCandidate *) candidate);
+    nice_candidate_free ((NiceCandidate *)candidate);
 
     cmp->local_candidates = g_slist_delete_link (cmp->local_candidates, i);
     i = next;
@@ -216,11 +214,8 @@ nice_component_remove_socket (NiceAgent *agent, NiceComponent *cmp,
       continue;
     }
 
-    if (candidate == cmp->selected_pair.remote) {
+    if (candidate == cmp->selected_pair.remote)
       nice_component_clear_selected_pair (cmp);
-      agent_signal_component_state_change (agent, cmp->stream_id,
-          cmp->id, NICE_COMPONENT_STATE_FAILED);
-    }
 
     if (stream)
       conn_check_prune_socket (agent, stream, cmp, candidate->sockptr);
@@ -289,7 +284,7 @@ nice_component_clean_turn_servers (NiceAgent *agent, NiceComponent *cmp)
       cmp->selected_pair.priority = 0;
       cmp->turn_candidate = candidate;
     } else {
-      agent_remove_local_candidate (agent, (NiceCandidate *) candidate);
+      agent_remove_local_candidate (agent, stream, (NiceCandidate *) candidate);
       relay_candidates = g_slist_append(relay_candidates, candidate);
     }
     cmp->local_candidates = g_slist_delete_link (cmp->local_candidates, i);
@@ -312,10 +307,10 @@ nice_component_clean_turn_servers (NiceAgent *agent, NiceComponent *cmp)
 static void
 nice_component_clear_selected_pair (NiceComponent *component)
 {
-  if (component->selected_pair.keepalive.tick_source != NULL) {
-    g_source_destroy (component->selected_pair.keepalive.tick_source);
-    g_source_unref (component->selected_pair.keepalive.tick_source);
-    component->selected_pair.keepalive.tick_source = NULL;
+  if (component->selected_pair.remote_consent.tick_source != NULL) {
+    g_source_destroy (component->selected_pair.remote_consent.tick_source);
+    g_source_unref (component->selected_pair.remote_consent.tick_source);
+    component->selected_pair.remote_consent.tick_source = NULL;
   }
 
   memset (&component->selected_pair, 0, sizeof(CandidatePair));
@@ -324,7 +319,7 @@ nice_component_clear_selected_pair (NiceComponent *component)
 /* Must be called with the agent lock held as it touches internal Component
  * state. */
 void
-nice_component_close (NiceAgent *agent, NiceComponent *cmp)
+nice_component_close (NiceAgent *agent, NiceStream *stream, NiceComponent *cmp)
 {
   IOCallbackData *data;
   GOutputVector *vec;
@@ -353,7 +348,7 @@ nice_component_close (NiceAgent *agent, NiceComponent *cmp)
         cmp->turn_candidate = NULL;
 
   while (cmp->local_candidates) {
-    agent_remove_local_candidate (agent, cmp->local_candidates->data);
+    agent_remove_local_candidate (agent, stream, cmp->local_candidates->data);
     nice_candidate_free (cmp->local_candidates->data);
     cmp->local_candidates = g_slist_delete_link (cmp->local_candidates,
         cmp->local_candidates);
@@ -463,6 +458,8 @@ nice_component_restart (NiceComponent *cmp)
   /* Reset the priority to 0 to make sure we get a new pair */
   cmp->selected_pair.priority = 0;
 
+  cmp->have_local_consent = TRUE;
+
   /* note: component state managed by agent */
 }
 
@@ -504,6 +501,7 @@ nice_component_update_selected_pair (NiceAgent *agent, NiceComponent *component,
   component->selected_pair.remote = pair->remote;
   component->selected_pair.priority = pair->priority;
   component->selected_pair.stun_priority = pair->stun_priority;
+  component->selected_pair.remote_consent.have = pair->remote_consent.have;
 
   nice_component_add_valid_candidate (agent, component,
       (NiceCandidate *) pair->remote);
@@ -585,6 +583,7 @@ nice_component_set_selected_remote_candidate (NiceComponent *component,
   component->selected_pair.local = (NiceCandidateImpl *) local;
   component->selected_pair.remote = (NiceCandidateImpl *) remote;
   component->selected_pair.priority = priority;
+  component->selected_pair.remote_consent.have = TRUE;
 
   /* Get into fallback mode where packets from any source is accepted once
    * this has been called. This is the expected behavior of pre-ICE SIP.
@@ -1112,6 +1111,8 @@ nice_component_init (NiceComponent *component)
 
   g_queue_init (&component->queued_tcp_packets);
   g_queue_init (&component->incoming_checks);
+
+  component->have_local_consent = TRUE;
 }
 
 static void

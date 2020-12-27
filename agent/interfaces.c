@@ -89,7 +89,7 @@ static const gchar *ignored_iface_prefix_list[] = {
 static gchar *
 sockaddr_to_string (const struct sockaddr *addr)
 {
-  char addr_as_string[INET6_ADDRSTRLEN+1];
+  char addr_as_string[NI_MAXHOST];
   size_t addr_len;
 
   switch (addr->sa_family) {
@@ -386,6 +386,10 @@ nice_interfaces_get_local_ips (gboolean include_loopback)
       continue;
 
     if (ifa->ifa_addr == NULL)
+      continue;
+
+    if (ifa->ifa_addr->sa_family != AF_INET &&
+        ifa->ifa_addr->sa_family != AF_INET6)
       continue;
 
     /* Convert to a string. */
